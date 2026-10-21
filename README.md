@@ -1,4 +1,4 @@
-# TD1 — Capitales européennes : météo et CO₂
+# TD1 Capitales européennes : météo et CO₂
 
 ## Décision soutenue
 Choisir une capitale de l’Union européenne pour un séjour de sept jours, au départ de Lyon, en combinant qualité météo et émissions estimées du déplacement. Le prix est volontairement exclu. Le projet répond aux étapes 1 à 7 du manuel et inclut les huit réflexions en français.
