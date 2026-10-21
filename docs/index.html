@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capitales européennes — météo et CO₂</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  #recommendation { padding: 1rem; border: 2px solid #0d7c9e; border-radius: 8px; }
+  body { background: #f3f6f5; color: #172f36; line-height: 1.6; }
+  h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.15; }
+  #recommendation { background: #e0f1e9; }
+  #stale { color: #8b3600; font-weight: 600; }
+  canvas { margin-top: 2rem; background: white; border-radius: 12px; }
+  details { margin: 2rem 0; padding: 1rem; background: white; border-radius: 12px; }
+  table { width: 100%; border-collapse: collapse; background: white; font-size: .9rem; }
+  th, td { padding: .6rem; border-bottom: 1px solid #dce5e1; text-align: left; }
+  th { background: #e0f1e9; }
+  #updated { color: #666; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+  <h1 id="heading">Où partir en Europe ?</h1>
+  <p>Un départ, deux critères : 50 % météo et 50 % émissions estimées. Le prix des vols n’entre pas dans le calcul.</p>
+  <p id="period"></p><p id="stale" role="status"></p>
+  <div id="recommendation">Chargement du classement…</div>
+  <canvas id="rankChart" height="320"></canvas>
+  <canvas id="scatterChart" height="320"></canvas>
+  <p id="updated"></p>
+  <details><summary>Comprendre la méthode et ses limites</summary><p>Le score météo est la moyenne des scores de température maximale moyenne, d’ensoleillement moyen et de faibles précipitations. Chaque variable est normalisée entre les destinations présentes. Une température plus élevée est toujours favorisée dans le modèle du TP, même en cas de chaleur excessive.</p><p>Émissions estimées = 2 × distance à vol d’oiseau × 0,15 kg CO₂e/passager-km. Ce facteur est une hypothèse pédagogique, non un facteur officiel validé. Les trajets réels, escales et alternatives ferroviaires ne sont pas modélisés.</p><p>Prévisions : <a href="https://open-meteo.com/">Open-Meteo</a>, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Coordonnées : tableau du TD1. La fenêtre commence le jour de collecte, pas le lundi de la semaine suivante.</p></details>
+  <h2>Toutes les destinations</h2><div style="overflow:auto"><table><thead><tr><th>Rang</th><th>Capitale</th><th>Score</th><th>Max. moyenne °C</th><th>Pluie mm</th><th>Soleil h/j</th><th>CO₂e A/R kg</th></tr></thead><tbody id="rows"></tbody></table></div>
+
+<script>
+fetch('data/rankings.json')
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then(data => {
+    const dest = data.destinations;
+
+    if (!dest || dest.length === 0) {
+      document.getElementById('recommendation').innerHTML =
+        '<p>No ranking data yet. The automated workflow hasn\'t completed a run ' +
+        'yet -- trigger it once from the repo\'s Actions tab ("Run workflow"), ' +
+        'then reload this page.</p>';
+      document.getElementById('updated').textContent = 'Status: ' + data.generated_at;
+      return;
+    }
+
+    const top = dest[0];
+    const origin = data.origin.name;
+    document.getElementById('heading').textContent = `Où partir au départ de ${origin} ?`;
+    document.getElementById('period').textContent = `${dest.length} capitales · Prévisions du ${top.forecast_start} au ${top.forecast_end}`;
+    const age = Date.now() - Date.parse(data.generated_at);
+    if (!Number.isFinite(age) || age > 8 * 86400000 || new Date().toISOString().slice(0,10) > top.forecast_end) {
+      document.getElementById('stale').textContent = 'Attention : prévisions périmées ou collecte ancienne. Vérifier la prochaine mise à jour.';
+    }
+    for (const [i, d] of dest.entries()) {
+      const tr = document.createElement('tr');
+      for (const value of [i+1, d.capital, d.final_score.toFixed(3), d.avg_max_temp, d.total_precip_mm, (d.avg_sunshine_s/3600).toFixed(1), d.co2_kg_roundtrip]) {
+        const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
+      }
+      document.getElementById('rows').appendChild(tr);
+    }
+
+    document.getElementById('recommendation').innerHTML =
+      `<h2>Destination recommandée : ${top.capital}, ${top.country}</h2>` +
+      `<p>Score météo ${top.weather_score.toFixed(2)}, score CO&#8322; ` +
+      `${top.co2_score.toFixed(2)} (${top.co2_kg_roundtrip} kg CO&#8322;e aller-retour, ` +
+      `${top.distance_km} km par trajet).</p>`;
+
+    document.getElementById('updated').textContent =
+      `Dernière collecte : ${data.generated_at} · Facteur pédagogique : ` +
+      `${data.emissions_factor_kg_per_km} kg CO2e/passenger-km.`;
+
+    // Green (best) to red (worst) colour spectrum, shared by both charts, based
+    // on each destination's final_score relative to the others actually present.
+    function scoreToColor(t) {
+      const clamped = Math.max(0, Math.min(1, t));
+      const hue = 120 * clamped; // 0 = red, 120 = green
+      return `hsl(${hue.toFixed(0)}, 70%, 45%)`;
+    }
+    function normalizeForColor(values) {
+      const lo = Math.min(...values);
+      const hi = Math.max(...values);
+      if (hi === lo) return values.map(() => 0.5);
+      return values.map(v => (v - lo) / (hi - lo));
+    }
+    const scoreNorm = normalizeForColor(dest.map(d => d.final_score));
+    const spectrumColors = scoreNorm.map(t => scoreToColor(t));
+
+    new Chart(document.getElementById('rankChart'), {
+      type: 'bar',
+      data: {
+        labels: dest.map(d => d.capital),
+        datasets: [{
+          label: 'Score final',
+          data: dest.map(d => d.final_score),
+          backgroundColor: spectrumColors
+        }]
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: `Classement des ${dest.length} capitales (vert = meilleur score)` },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const d = dest[items[0].dataIndex];
+                return `${d.capital}, ${d.country}`;
+              },
+              label: (item) => `Score final : ${item.parsed.y.toFixed(3)}`
+            }
+          }
+        }
+      }
+    });
+
+    new Chart(document.getElementById('scatterChart'), {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: 'Weather vs CO2 (top-left is best)',
+          data: dest.map(d => ({ x: 1 - d.co2_score, y: d.weather_score })),
+          backgroundColor: spectrumColors,
+          pointRadius: 9,
+          pointHoverRadius: 13
+        }]
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: 'Compromis météo / émissions : le coin supérieur gauche est préférable' },
+          tooltip: {
+            callbacks: {
+              label: (item) => {
+                const d = dest[item.dataIndex];
+                return `${d.capital}, ${d.country}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Émissions normalisées (moins = mieux)' } },
+          y: { title: { display: true, text: 'Score météo (higher = better)' } }
+        }
+      }
+    });
+  })
+  .catch(err => {
+    document.getElementById('recommendation').innerHTML =
+      '<p>Could not load ranking data (' + err + '). Check that ' +
+      '<code>docs/data/rankings.json</code> exists in the repo and that GitHub ' +
+      'Pages is serving from the <code>/docs</code> folder.</p>';
+  });
+</script>
+</body>
+</html>
